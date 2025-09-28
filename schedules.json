@@ -1,0 +1,66 @@
+{
+  "schedules": [
+    {
+      "title": "테스트1",
+      "time_str": "09:31",
+      "days": [
+        6
+      ],
+      "active": true,
+      "last_fired_date": ""
+    },
+    {
+      "title": "테스트2",
+      "time_str": "09:33",
+      "days": [
+        0
+      ],
+      "active": true,
+      "last_fired_date": ""
+    },
+    {
+      "title": "테스트3",
+      "time_str": "09:34",
+      "days": [
+        0,
+        6
+      ],
+      "active": true,
+      "last_fired_date": ""
+    },
+    {
+      "title": "테스트4",
+      "time_str": "21:31",
+      "days": [
+        0,
+        6
+      ],
+      "active": true,
+      "last_fired_date": "2025-09-28"
+    },
+    {
+      "title": "테스트5",
+      "time_str": "21:32",
+      "days": [
+        0
+      ],
+      "active": true,
+      "last_fired_date": ""
+    },
+    {
+      "title": "테스트6",
+      "time_str": "21:36",
+      "days": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "active": true,
+      "last_fired_date": "2025-09-28"
+    }
+  ]
+}
