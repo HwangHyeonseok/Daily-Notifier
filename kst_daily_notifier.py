@@ -1,18 +1,28 @@
 # -*- coding: utf-8 -*-
-#------------------------- ver 1.1 -------------------------#
-# 요일 지정 기능 추가
-#-----------------------------------------------------------#
+#------------------------- ver 1.1 (Portable) -------------------------#
+# 요일 지정 기능 추가 + 포터블 대비
+# - 데이터 파일을 OS 표준 경로에 저장:
+#   Windows: %APPDATA%\KSTDailyNotifier\schedules.json
+#   macOS  : ~/Library/Application Support/KSTDailyNotifier/schedules.json
+#   Linux  : ~/.config/KSTDailyNotifier/schedules.json
+# - 기존 실행 폴더의 schedules.json이 있으면 최초 1회 자동 마이그레이션
+# - ZoneInfo가 없으면 KST(UTC+9) 고정 오프셋으로 동작
+#---------------------------------------------------------------------#
 """
-KST Daily Notifier (요일 지정 기능 추가 버전)
-- 매일이 아니라, 사용자가 체크한 요일(월~일)에만 지정한 시간에 팝업 알림을 띄웁니다.
-- 기존 기능(팝업 확인 시 닫히고, 삭제 전까지 반복/확인 주기/5분+주기 보정/로컬 JSON 저장)은 그대로 유지합니다.
+KST Daily Notifier (요일 지정 + 포터블 배포 대응)
+- 체크한 요일(월~일)에 지정한 시간에 팝업 알림 표시
+- 확인(OK) 시 닫힘, 삭제 전까지 반복
+- 확인 주기(초) 조절, 지연 보정: [알림시각 - (5분 + 확인주기)]
+- 데이터 로컬 저장 (OS 표준 사용자 경로)
 """
 import json
 import os
+import platform
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except Exception:
@@ -21,27 +31,50 @@ except Exception:
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-DATA_FILE = "schedules.json"
+APP_NAME = "KSTDailyNotifier"
 DEFAULT_INTERVAL_SEC = 30
 KST_TZNAME = "Asia/Seoul"
-# Python weekday(): Monday=0 ... Sunday=6
 KOR_WD = ["월", "화", "수", "목", "금", "토", "일"]
 
+# ---------- Portable data path helpers ----------
+def get_data_dir() -> Path:
+    system = platform.system()
+    if system == "Windows":
+        base = os.getenv("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        p = Path(base) / APP_NAME
+    elif system == "Darwin":
+        p = Path.home() / "Library" / "Application Support" / APP_NAME
+    else:
+        p = Path.home() / ".config" / APP_NAME
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
+DATA_DIR = get_data_dir()
+DATA_FILE = DATA_DIR / "schedules.json"
+LEGACY_FILE = Path("schedules.json")
+
+def migrate_legacy_file():
+    try:
+        if LEGACY_FILE.exists() and not DATA_FILE.exists():
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            DATA_FILE.write_bytes(LEGACY_FILE.read_bytes())
+    except Exception:
+        pass
+
+# ---------- Data model ----------
 @dataclass
 class Schedule:
-    title: str                 # 일정 제목
-    time_str: str              # "HH:MM" 또는 "HH:MM:SS"
-    days: list = field(default_factory=lambda: [0,1,2,3,4,5,6])  # 알림 요일(기본: 매일)
+    title: str
+    time_str: str
+    days: list = field(default_factory=lambda: [0,1,2,3,4,5,6])
     active: bool = True
-    last_fired_date: str = ""  # "YYYY-MM-DD" (KST 기준 마지막 팝업 확인 날짜 저장)
+    last_fired_date: str = ""
 
     def to_dict(self):
         return asdict(self)
 
     @staticmethod
     def from_dict(d):
-        # days가 없는 기존 데이터도 호환 (기본: 매일)
         days = d.get("days", [0,1,2,3,4,5,6])
         return Schedule(
             title=d["title"],
@@ -51,39 +84,33 @@ class Schedule:
             last_fired_date=d.get("last_fired_date", ""),
         )
 
-
 class NotifierApp:
     def __init__(self, root):
         self.root = root
         self.root.title("KST Daily Notifier (요일/시간 알림)")
         self.root.geometry("900x620")
 
-        # KST Timezone
-        if ZoneInfo is None:
-            messagebox.showwarning(
-                "경고",
-                "이 파이썬에는 zoneinfo 모듈이 없습니다 (Python 3.9+ 권장). "
-                "KST 계산이 OS 로캘에 의존할 수 있습니다."
-            )
-            self.tz = None
-        else:
-            self.tz = ZoneInfo(KST_TZNAME)
+        self.tz = self._init_timezone()
 
-        # State
+        migrate_legacy_file()
         self.schedules = self.load_schedules()
         self.interval_sec = DEFAULT_INTERVAL_SEC
         self.stop_event = threading.Event()
         self.thread = None
 
-        # UI
         self.build_ui()
-
-        # 백그라운드 알림 스레드 시작
         self.start_thread()
 
-    # ---------- Persistence ----------
+    def _init_timezone(self):
+        if ZoneInfo is not None:
+            try:
+                return ZoneInfo(KST_TZNAME)
+            except Exception:
+                pass
+        return timezone(timedelta(hours=9))
+
     def load_schedules(self):
-        if not os.path.exists(DATA_FILE):
+        if not DATA_FILE.exists():
             return []
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -101,7 +128,6 @@ class NotifierApp:
 
     # ---------- UI ----------
     def build_ui(self):
-        # 상단 입력 프레임
         frm_top = ttk.Frame(self.root, padding=10)
         frm_top.pack(fill="x")
 
@@ -115,19 +141,17 @@ class NotifierApp:
 
         ttk.Button(frm_top, text="추가", command=self.add_schedule).grid(row=0, column=4, padx=6)
 
-        # 요일 체크박스
         frm_days = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         frm_days.pack(fill="x")
         ttk.Label(frm_days, text="알림 요일").pack(side="left", padx=(0, 10))
 
         self.day_vars = []
         for i, name in enumerate(KOR_WD):
-            var = tk.BooleanVar(value=True)  # 기본 모두 체크(매일)
+            var = tk.BooleanVar(value=True)
             chk = ttk.Checkbutton(frm_days, text=name, variable=var)
             chk.pack(side="left", padx=(0, 6))
             self.day_vars.append(var)
 
-        # 중간 리스트 프레임
         frm_mid = ttk.Frame(self.root, padding=(10, 0, 10, 10))
         frm_mid.pack(fill="both", expand=True)
 
@@ -153,7 +177,6 @@ class NotifierApp:
 
         self.refresh_tree()
 
-        # 하단 제어 프레임
         frm_bot = ttk.Frame(self.root, padding=10)
         frm_bot.pack(fill="x")
 
@@ -168,8 +191,7 @@ class NotifierApp:
 
         hint = (
             "주의: 팝업은 [설정한 알림시간 - (5분 + 주기)]에 시작합니다.\n"
-            "예) 09:00, 주기 30초 → 08:54:30~08:55:00 팝업 표시\n"
-            "시간 확인 주기(초)를 너무 짧게 설정하면, 프로그램 CPU 사용량이 증가할 수 있습니다."
+            f"데이터 파일 위치: {DATA_FILE}"
         )
         ttk.Label(self.root, text=hint, foreground="#555").pack(anchor="w", padx=12, pady=(0, 8))
 
@@ -231,7 +253,6 @@ class NotifierApp:
             messagebox.showerror("입력 오류", "확인 주기는 5초~600초 사이의 정수로 입력해 주세요.")
             self.interval_var.set(self.interval_sec)
 
-    # ---------- Thread / Alert ----------
     def start_thread(self):
         self.stop_event.clear()
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
@@ -247,45 +268,33 @@ class NotifierApp:
             try:
                 self._check_and_alert()
             except Exception as e:
-                # 안전하게 계속 동작
                 print("알림 루프 오류:", e)
-            # 확인 주기만큼 대기
             time.sleep(self.interval_sec)
 
     def _check_and_alert(self):
-        # 현재 시각 (KST)
         now = self._now_kst()
         today_str = now.strftime("%Y-%m-%d")
-        today_wd = now.weekday()  # 0=Mon ... 6=Sun
+        today_wd = now.weekday()
 
         for s in self.schedules:
             if not s.active:
                 continue
-            # 오늘 요일에 해당하지 않으면 건너뛰기
             if today_wd not in s.days:
                 continue
-            # 오늘 이미 알림 처리했는지 확인
             if s.last_fired_date == today_str:
                 continue
 
-            # 원래 알림 목표 시간 (오늘 KST 기준)
             target_dt = self._combine_today_time(now, s.time_str)
-
-            # 보정: 5분 + 확인주기 초 앞당겨 알림
             lead = timedelta(minutes=5, seconds=self.interval_sec)
             alert_dt = target_dt - lead
 
-            # 만약 alert_dt가 현재보다 과거이고 target_dt는 아직 지나지 않은 경우,
-            # 지금 팝업을 띄워보자.
             if alert_dt <= now < target_dt:
-                self._show_alert(s, target_dt)  # 팝업 표시
-                # 사용자가 확인을 누른 뒤 날짜 갱신
+                self._show_alert(s, target_dt)
                 s.last_fired_date = today_str
                 self.save_schedules()
                 self.refresh_tree()
 
     def _show_alert(self, schedule: Schedule, target_dt: datetime):
-        # 메인 쓰레드에서 안전하게 팝업 띄우기
         def popup():
             alert = tk.Toplevel(self.root)
             alert.title("일정 알림")
@@ -294,7 +303,6 @@ class NotifierApp:
             alert.geometry(f"{w}x{h}")
             alert.resizable(False, False)
 
-            # 중앙 배치
             alert.update_idletasks()
             sw = alert.winfo_screenwidth()
             sh = alert.winfo_screenheight()
@@ -308,41 +316,30 @@ class NotifierApp:
             ttk.Label(frm, text="일정 알림", font=("Segoe UI", 14, "bold")).pack(anchor="center", pady=(0, 10))
             ttk.Label(frm, text=schedule.title, font=("Segoe UI", 12)).pack(anchor="center", pady=(0, 6))
 
-            # 원래 알림 시간 안내
             tstr = target_dt.strftime("%Y-%m-%d %H:%M")
             ttk.Label(frm, text=f"(원래 알림 시각: {tstr} KST)", foreground="#555").pack(anchor="center", pady=(0, 10))
 
             ttk.Button(frm, text="확인", command=alert.destroy).pack(pady=(8, 0))
 
-            # 포커스
             alert.transient(self.root)
             alert.grab_set()
             alert.focus_force()
             self.root.wait_window(alert)
 
-        # tkinter는 메인 스레드에서 UI를 다뤄야 하므로 이벤트 큐에 넣는다.
         self.root.after(0, popup)
 
-    # ---------- Helpers ----------
     def _now_kst(self) -> datetime:
-        if self.tz is not None:
-            return datetime.now(self.tz)
-        # Fallback: naive localtime (KST 가정)
-        return datetime.now()
+        return datetime.now(self.tz)
 
     def _combine_today_time(self, now_kst: datetime, time_str: str) -> datetime:
         parts = time_str.split(":")
         if len(parts) == 2:
-            hh, mm = int(parts[0]), int(parts[1])
-            ss = 0
+            hh, mm = int(parts[0]), int(parts[1]); ss = 0
         elif len(parts) == 3:
             hh, mm, ss = int(parts[0]), int(parts[1]), int(parts[2])
         else:
             raise ValueError("시간 형식은 HH:MM 또는 HH:MM:SS")
-        dt = datetime(now_kst.year, now_kst.month, now_kst.day, hh, mm, ss)
-        if self.tz is not None:
-            dt = dt.replace(tzinfo=self.tz)
-        return dt
+        return datetime(now_kst.year, now_kst.month, now_kst.day, hh, mm, ss, tzinfo=self.tz)
 
     def _validate_time(self, time_str: str) -> bool:
         try:
@@ -357,18 +354,15 @@ class NotifierApp:
         except Exception:
             return False
 
-    # ---------- Cleanup ----------
     def on_close(self):
         self.stop_thread()
         self.root.destroy()
-
 
 def main():
     root = tk.Tk()
     app = NotifierApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
-
 
 if __name__ == "__main__":
     main()
