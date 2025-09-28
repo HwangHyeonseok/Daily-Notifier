@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #------------------------- ver 1.1 (Portable) -------------------------#
-# 요일 지정 기능 추가 + 포터블 대비
+# 요일 지정 기능 추가 + 포터블 대비(무설치 버전)
 # - 데이터 파일을 OS 표준 경로에 저장:
 #   Windows: %APPDATA%\KSTDailyNotifier\schedules.json
 #   macOS  : ~/Library/Application Support/KSTDailyNotifier/schedules.json
